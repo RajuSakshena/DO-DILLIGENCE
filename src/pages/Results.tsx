@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { CheckCircle, XCircle, AlertTriangle, Compass, Mountain, Flag } from "lucide-react";
+import { CheckCircle, XCircle, Compass, ShieldCheck, ShieldAlert, TrendingUp, TriangleAlert } from "lucide-react";
 import { useAssessment } from "@/store/assessment-context";
 import { getParameterIcon } from "@/lib/assessment-data";
 import { getPriorityActions } from "@/lib/scoring";
@@ -12,27 +12,45 @@ const priorityColors: Record<string, { border: string; bg: string; text: string 
   Growth: { border: "border-l-[#15803D]", bg: "bg-[#F0FDF4]", text: "text-[#15803D]" },
 };
 
-const successSentences: Record<string, string> = {
-  legal: "Your legal foundation is solid. Funders can verify your registration and tax status without any gaps.",
-  financial: "Your financial documentation is in order. Audited accounts and ITR filings signal strong transparency to donors.",
-  governance: "Your governance structure is well-documented. Board records and KYC demonstrate institutional maturity.",
-  operational: "Your operational documentation supports credibility. Impact and structure are clearly evidenced.",
-  strategic: "You have a documented strategic direction. This signals long-term thinking to institutional funders.",
-  communications: "Your communications presence is established. Beneficiary stories and a website strengthen donor trust.",
-};
-
-const attentionSentences: Record<string, string> = {
-  legal: "A few statutory documents still need attention. Putting these in place will make funding applications go much more smoothly.",
-  financial: "Closing your financial documentation gaps will open the door to more institutional funding. Audited accounts are something most donors like to see.",
-  governance: "Governance records are still coming together. CSR funders typically look for board documentation as a baseline.",
-  operational: "A few operational documents are still missing. These help demonstrate your capacity to manage grants effectively.",
-  strategic: "No strategic documents are in place yet. Adding them isn't essential, but it will widen your appeal to larger institutional funders.",
-  communications: "Communication materials are still on the way. Building a visible presence will strengthen funder confidence over time.",
-};
+// SWOT card colour/icon configuration
+const swotConfig = {
+  strengths: {
+    title: "Strengths",
+    Icon: ShieldCheck,
+    bg: "#DFF3F2",
+    itemBg: "#CDEEEC",
+    border: "#14B8A6",
+    iconColor: "#15803D",
+  },
+  weaknesses: {
+    title: "Weaknesses",
+    Icon: ShieldAlert,
+    bg: "#FFE8D8",
+    itemBg: "#FFDBC2",
+    border: "#F97316",
+    iconColor: "#F97316",
+  },
+  opportunities: {
+    title: "Opportunities",
+    Icon: TrendingUp,
+    bg: "#E8F7D7",
+    itemBg: "#D9F1C0",
+    border: "#22C55E",
+    iconColor: "#22C55E",
+  },
+  threats: {
+    title: "Threats",
+    Icon: TriangleAlert,
+    bg: "#FFE3E3",
+    itemBg: "#FFD1D1",
+    border: "#EF4444",
+    iconColor: "#EF4444",
+  },
+} as const;
 
 const Results = () => {
   const navigate = useNavigate();
-  const { answers, orgProfile, scoring, getFilteredParams } = useAssessment();
+  const { answers, orgProfile, getFilteredParams } = useAssessment();
   const [openSection, setOpenSection] = useState<string | null>(null);
   const filteredParams = getFilteredParams();
 
@@ -94,50 +112,73 @@ const Results = () => {
     return null;
   };
 
-  // Overall completion score for a health area, used for Focus Area / The Peak
-  const getSectionScore = (paramId: string) => {
-    const param = filteredParams.find((p) => p.id === paramId)!;
-    const applicableDocs = param.documents;
-    if (applicableDocs.length === 0) return 0;
-    const yesCount = applicableDocs.filter((d) => answers[d.id] === "yes").length;
-    return (yesCount / applicableDocs.length) * 100;
-  };
-
   const hasMandatoryNo = filteredParams.some((p) => p.documents.some((d) => d.category === "mandatory" && answers[d.id] === "no"));
 
   // All priority actions (used by every accordion)
   const allActions = getPriorityActions(answers, orgProfile.foreignFunds, 0, filteredParams);
 
-  // Totals across all six health areas, for The Climb summary
-  const totalMandatory = filteredParams.reduce((sum, p) => sum + p.documents.filter((d) => d.category === "mandatory").length, 0);
-  const totalMandatoryDone = filteredParams.reduce(
-    (sum, p) => sum + p.documents.filter((d) => d.category === "mandatory" && answers[d.id] === "yes").length,
-    0
-  );
-  const totalOptional = filteredParams.reduce((sum, p) => sum + p.documents.filter((d) => d.category !== "mandatory").length, 0);
-  const totalOptionalDone = filteredParams.reduce(
-    (sum, p) => sum + p.documents.filter((d) => d.category !== "mandatory" && answers[d.id] === "yes").length,
-    0
-  );
+  // Classifies every Health Area into exactly one SWOT bucket based on mandatory/optional
+  // completion, in strict priority order: Strength -> Weakness -> Opportunity -> Threat.
+  // Counts are computed once here and carried on each item so the card UI never recalculates them.
+  const getSWOTCategories = () => {
+    const strengths: any[] = [];
+    const weaknesses: any[] = [];
+    const opportunities: any[] = [];
+    const threats: any[] = [];
+    const debugRows: any[] = [];
 
-  // Weakest area -> single Focus Area. Strongest area above 75% -> The Peak.
-  const paramScores = filteredParams
-    .filter((p) => p.documents.length > 0)
-    .map((p) => ({ param: p, score: getSectionScore(p.id) }));
+    filteredParams.forEach((param) => {
+      const mandatoryDocs = param.documents.filter((d) => d.category === "mandatory");
+      const optionalDocs = param.documents.filter((d) => d.category !== "mandatory");
 
-  const focusArea = paramScores.length > 0 ? paramScores.reduce((min, cur) => (cur.score < min.score ? cur : min)) : null;
+      const mandatoryTotal = mandatoryDocs.length;
+      const mandatoryDone = mandatoryDocs.filter((d) => answers[d.id] === "yes").length;
+      const optionalTotal = optionalDocs.length;
+      const optionalDone = optionalDocs.filter((d) => answers[d.id] === "yes").length;
 
-  const peakCandidates = paramScores.filter((p) => p.score > 75);
-  const peakArea = peakCandidates.length > 0 ? peakCandidates.reduce((max, cur) => (cur.score > max.score ? cur : max)) : null;
+      // Edge case: 0 total (mandatory or optional) counts as 100% for that dimension
+      const mandatoryPercent = mandatoryTotal === 0 ? 100 : (mandatoryDone / mandatoryTotal) * 100;
+      const optionalPercent = optionalTotal === 0 ? 100 : (optionalDone / optionalTotal) * 100;
 
-  const climbSummary =
-    totalMandatory > 0
-      ? `You've completed ${totalMandatoryDone} of ${totalMandatory} mandatory documents and ${totalOptionalDone} of ${totalOptional} optional documents across your six health areas. ${
-          focusArea ? `${focusArea.param.name} is the next stretch of the climb, ` : ""
-        }${peakArea ? `while ${peakArea.param.name} is already showing real strength.` : "and every area still has room to grow — that's normal this early in the climb."}`
-      : `You've completed ${totalOptionalDone} of ${totalOptional} optional documents across your six health areas. ${
-          peakArea ? `${peakArea.param.name} is already showing real strength.` : "Keep going — your profile is still taking shape."
-        }`;
+      const item = { param, mandatoryTotal, mandatoryDone, optionalTotal, optionalDone };
+
+      let category: "Strength" | "Weakness" | "Opportunity" | "Threat";
+
+      if (mandatoryPercent === 100 && optionalPercent === 100) {
+        strengths.push(item);
+        category = "Strength";
+      } else if (mandatoryPercent < 100) {
+        weaknesses.push(item);
+        category = "Weakness";
+      } else if (mandatoryPercent === 100 && optionalPercent >= 50 && optionalPercent < 100) {
+        opportunities.push(item);
+        category = "Opportunity";
+      } else {
+        threats.push(item);
+        category = "Threat";
+      }
+
+      debugRows.push({
+        "Health Area": param.name,
+        "Mandatory Done": mandatoryDone,
+        "Mandatory Total": mandatoryTotal,
+        "Optional Done": optionalDone,
+        "Optional Total": optionalTotal,
+        "Mandatory %": `${Math.round(mandatoryPercent)}%`,
+        "Optional %": `${Math.round(optionalPercent)}%`,
+        "Assigned Category": category,
+      });
+    });
+
+    if (process.env.NODE_ENV !== "production") {
+      // eslint-disable-next-line no-console
+      console.table(debugRows);
+    }
+
+    return { strengths, weaknesses, opportunities, threats };
+  };
+
+  const swotCategories = getSWOTCategories();
 
   const DonutChart = ({ percent, color }: { percent: number; color: string }) => {
     const radius = 26;
@@ -299,23 +340,11 @@ const Results = () => {
 
   return (
     <div className="min-h-screen">
-      {/* CSR Alert Banner - shown once only */}
-      {scoring.csrIneligible && (
-        <div className="px-6 py-4 mt-16" style={{ backgroundColor: "#B91C1C" }}>
-          <div className="max-w-4xl mx-auto flex items-start gap-3">
-            <AlertTriangle size={20} className="text-white shrink-0 mt-0.5" />
-            <p className="text-sm font-medium text-white">
-              One or more statutory documents are missing. This organisation is not currently eligible for CSR or institutional funding. See the details below.
-            </p>
-          </div>
-        </div>
-      )}
-
       {/* Dark Header */}
-      <div className={`${scoring.csrIneligible ? "" : "pt-16"} px-6 py-8`} style={{ backgroundColor: "#0B3D4A" }}>
+      <div className="pt-16 px-6 py-8" style={{ backgroundColor: "#0B3D4A" }}>
         <div className="max-w-4xl mx-auto">
           <h1 className="font-display font-bold text-white text-xl md:text-[26px]">
-            {orgProfile.name || "Organisation"}'s Results
+            The Metropolitan Institute Assessment Platform
           </h1>
           <span className="text-white/60 text-[13px]">
             {new Date().toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" })}
@@ -325,49 +354,46 @@ const Results = () => {
 
       <div className="px-6 py-8" style={{ backgroundColor: "#F8F6F1" }}>
         <div className="max-w-4xl mx-auto">
-          {/* The Climb - concise journey summary */}
-          <div className="bg-white rounded-2xl border border-[#E5E7EB] overflow-hidden mb-6 p-6 md:p-8">
-            <div className="flex items-center gap-2 mb-4">
-              <Compass size={20} className="text-[#C4872A]" />
-              <h2 className="font-display font-semibold text-[#0B3D4A] text-lg">The Climb</h2>
-            </div>
-            <p className="text-sm text-[#111827] font-body leading-relaxed">{climbSummary}</p>
-          </div>
+          {/* SWOT Analysis Dashboard */}
+          <h2 className="font-display font-bold text-[#0B3D4A] text-[22px] mb-1">SWOT Analysis</h2>
+          <p className="text-sm text-[#6B7280] font-body mb-4">
+            Your six health areas, grouped by how complete their mandatory and optional documentation is.
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+            {(Object.keys(swotConfig) as Array<keyof typeof swotConfig>).map((key) => {
+              const { title, Icon, bg, itemBg, border, iconColor } = swotConfig[key];
+              const items = swotCategories[key];
 
-          {/* Focus Area - single weakest health area */}
-          <div className="bg-white rounded-2xl border border-[#E5E7EB] overflow-hidden mb-6 p-6 md:p-8">
-            <div className="flex items-center gap-2 mb-3">
-              <Flag size={18} className="text-[#C4872A]" />
-              <h2 className="font-display font-semibold text-[#0B3D4A] text-base">Focus Area</h2>
-            </div>
-            {focusArea ? (
-              <>
-                <p className="font-display font-semibold text-[#111827] text-[15px] mb-1">{focusArea.param.name}</p>
-                <p className="text-sm text-[#4B5563] font-body leading-relaxed">
-                  {attentionSentences[focusArea.param.id] || `${focusArea.param.name} is where focusing your energy next will make the biggest difference.`}
-                </p>
-              </>
-            ) : (
-              <p className="text-sm text-[#4B5563] font-body">Great work — no single area stands out as needing focus right now.</p>
-            )}
-          </div>
+              return (
+                <div
+                  key={key}
+                  className="rounded-2xl border border-[#E5E7EB] border-l-4 shadow-sm p-6 transition-all duration-200 hover:shadow-md hover:-translate-y-0.5"
+                  style={{ backgroundColor: bg, borderLeftColor: border }}
+                >
+                  <div className="flex items-center gap-2 mb-4">
+                    <Icon size={20} style={{ color: iconColor }} />
+                    <h3 className="font-display font-semibold text-[#0B3D4A] text-base">{title}</h3>
+                  </div>
 
-          {/* The Peak - highest scoring area above 75%, or encouragement */}
-          <div className="bg-white rounded-2xl border border-[#E5E7EB] overflow-hidden mb-8 p-6 md:p-8">
-            <div className="flex items-center gap-2 mb-3">
-              <Mountain size={18} className="text-[#15803D]" />
-              <h2 className="font-display font-semibold text-[#0B3D4A] text-base">The Peak</h2>
-            </div>
-            {peakArea ? (
-              <>
-                <p className="font-display font-semibold text-[#111827] text-[15px] mb-1">{peakArea.param.name}</p>
-                <p className="text-sm text-[#4B5563] font-body leading-relaxed">
-                  {successSentences[peakArea.param.id] || `${peakArea.param.name} is a genuine strength for your organisation.`}
-                </p>
-              </>
-            ) : (
-              <p className="text-sm text-[#4B5563] font-body">Still finding your peak! No area above 75% yet.</p>
-            )}
+                  {items.length > 0 ? (
+                    <div className="flex flex-wrap gap-2">
+                      {items.map(({ param }: any) => (
+                        <span
+                          key={param.id}
+                          className="inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-sm font-medium text-[#111827] font-body transition-all hover:scale-105 hover:shadow-sm cursor-default"
+                          style={{ backgroundColor: itemBg }}
+                        >
+                          <span style={{ color: border }}>✔</span>
+                          {param.name}
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-sm text-[#6B7280] font-body">No health areas in this category.</p>
+                  )}
+                </div>
+              );
+            })}
           </div>
 
           {/* 6 Health Areas */}
