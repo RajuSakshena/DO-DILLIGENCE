@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useAssessment } from "@/store/assessment-context";
+import { updateSubmission } from "@/lib/api";
 import { Input } from "@/components/ui/input";
 import { motion, AnimatePresence } from "framer-motion";
 import { CheckCircle } from "lucide-react";
@@ -10,6 +11,7 @@ const GiftPage = () => {
   const [email, setEmail] = useState("");
   const [role, setRole] = useState("");
   const [emailError, setEmailError] = useState("");
+  const [submitError, setSubmitError] = useState("");
   const [submitted, setSubmitted] = useState(false);
   const [showDoneLink, setShowDoneLink] = useState(false);
 
@@ -21,26 +23,25 @@ const GiftPage = () => {
       return;
     }
     setEmailError("");
-    const id = localStorage.getItem("orgId");
+    setSubmitError("");
+
+    const orgId = localStorage.getItem("orgId");
+    if (!orgId) {
+      console.error("Missing orgId in localStorage — cannot save gift information.");
+      setSubmitError("We couldn't find your assessment. Please restart the assessment and try again.");
+      return;
+    }
+
     try {
-      const response = await fetch("https://tmi-backend.onrender.com/save-gift", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          id,
-          email: email,
-          role: role
-        })
+      await updateSubmission(orgId, {
+        gift_email: email,
+        gift_role: role,
       });
-      if (!response.ok) {
-        throw new Error("Failed to save gift information");
-      }
       setSubmitted(true);
       setTimeout(() => setShowDoneLink(true), 1500);
     } catch (error) {
       console.error("Error claiming gift:", error);
+      setSubmitError("Something went wrong sending your checklist. Please try again.");
     }
   };
 
@@ -127,6 +128,8 @@ const GiftPage = () => {
                   />
                 </div>
               </div>
+
+              {submitError && <p className="text-xs text-[#B91C1C] text-center mt-4">{submitError}</p>}
 
               <button
                 onClick={handleClaim}

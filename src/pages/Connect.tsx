@@ -2,6 +2,7 @@ import { useState, useMemo } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { ChevronLeft, ChevronRight, CheckCircle, Check } from "lucide-react";
 import { useAssessment } from "@/store/assessment-context";
+import { updateSubmission } from "@/lib/api";
 import { motion, AnimatePresence } from "framer-motion";
 
 const TIME_SLOTS = [
@@ -36,6 +37,7 @@ const Connect = () => {
   const [shareReport, setShareReport] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [showDoneLink, setShowDoneLink] = useState(false);
+  const [submitError, setSubmitError] = useState("");
 
   const saturday = useMemo(() => {
     const base = getNextSaturday(new Date());
@@ -49,9 +51,28 @@ const Connect = () => {
     navigate("/");
   };
 
-  const handleSubmit = () => {
-    setSubmitted(true);
-    setTimeout(() => setShowDoneLink(true), 1500);
+  const handleSubmit = async () => {
+    setSubmitError("");
+
+    const orgId = localStorage.getItem("orgId");
+    if (!orgId) {
+      console.error("Missing orgId in localStorage — cannot save session booking.");
+      setSubmitError("We couldn't find your assessment. Please restart the assessment and try again.");
+      return;
+    }
+
+    try {
+      await updateSubmission(orgId, {
+        connect_slot: selectedSlot,
+        connect_agenda: agenda,
+        connect_share_report: shareReport,
+      });
+      setSubmitted(true);
+      setTimeout(() => setShowDoneLink(true), 1500);
+    } catch (error) {
+      console.error("Error saving session booking:", error);
+      setSubmitError("Something went wrong booking your session. Please try again.");
+    }
   };
 
   return (
@@ -162,6 +183,8 @@ const Connect = () => {
                   </p>
                 )}
               </div>
+
+              {submitError && <p className="text-xs text-[#B91C1C] text-center mb-3">{submitError}</p>}
 
               {/* Submit */}
               <button

@@ -2,15 +2,30 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Info, Check } from "lucide-react";
 import { useAssessment, type RegistrationType } from "@/store/assessment-context";
-import { INDIAN_STATES } from "@/lib/assessment-data";
+import {
+    INDIAN_STATES,
+    STATE_DISTRICTS
+} from "@/lib/assessment-data";
 import { Input } from "@/components/ui/input";
 import { motion } from "framer-motion";
 import ConfidentialityModal from "@/components/ConfidentialityModal";
+import { createSubmission } from "@/lib/api";
+
+// Extended locally to include the new fields without modifying the shared
+// OrgProfile type in @/store/assessment-context. Ideally, add `primaryRole`
+// and `email` to the OrgProfile interface in that file for full type safety
+// across the app; this local extension is a safe fallback that fixes the
+// TS2339 errors without touching unrelated files.
+type ExtendedOrgProfile = ReturnType<typeof useAssessment>["orgProfile"] & {
+  primaryRole?: string;
+  email?: string;
+  contactDetails?: string;
+};
 
 const Profile = () => {
   const navigate = useNavigate();
   const { orgProfile, setOrgProfile, confidentialityAccepted, setConfidentialityAccepted } = useAssessment();
-  const [localProfile, setLocalProfile] = useState(orgProfile);
+  const [localProfile, setLocalProfile] = useState<ExtendedOrgProfile>(orgProfile as ExtendedOrgProfile);
   const [localConfidentiality, setLocalConfidentiality] = useState(confidentialityAccepted);
   const [errors, setErrors] = useState<Record<string, boolean>>({});
   const [shakeField, setShakeField] = useState<string | null>(null);
@@ -24,11 +39,15 @@ const Profile = () => {
     designation: ""
   });
 
+  const isValidEmail = (email: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+
   const isLocalProfileComplete =
     localProfile.name.trim() !== "" &&
     localProfile.registrationType !== "" &&
+    localProfile.primaryRole !== "" &&
     localProfile.state !== "" &&
-    localProfile.yearEstablished.length === 4;
+    localProfile.yearEstablished.length === 4 &&
+    isValidEmail(localProfile.email || "");
 
   const canSubmit = isLocalProfileComplete && localConfidentiality;
 
@@ -45,8 +64,10 @@ const Profile = () => {
     const newErrors: Record<string, boolean> = {};
     if (!localProfile.name.trim()) newErrors.name = true;
     if (!localProfile.registrationType) newErrors.registrationType = true;
+    if (!localProfile.primaryRole) newErrors.primaryRole = true;
     if (!localProfile.state) newErrors.state = true;
     if (localProfile.yearEstablished.length !== 4) newErrors.yearEstablished = true;
+    if (!isValidEmail(localProfile.email || "")) newErrors.email = true;
     if (!localConfidentiality) newErrors.confidentiality = true;
 
     if (Object.keys(newErrors).length > 0) {
@@ -57,37 +78,40 @@ const Profile = () => {
       return;
     }
 
-    setOrgProfile(localProfile);
-    setConfidentialityAccepted(true);
-    navigate("/assessment/legal");
+    console.log("[PROFILE SUBMIT START]");
 
-    // API call runs in background - non-blocking
+    const payload = {
+      org_name: localProfile.name,
+      registration_type: localProfile.registrationType,
+      primary_role: localProfile.primaryRole,
+      state: localProfile.state,
+      city: localProfile.city,
+      year_established: parseInt(localProfile.yearEstablished, 10),
+      email: localProfile.email,
+      contact_details: localProfile.contactDetails || "",
+      foreign_funds: localProfile.foreignFunds ?? false,
+      confidentiality_accepted: true,
+    };
+
+    console.log("[PROFILE PAYLOAD]", payload);
+
     try {
-      const response = await fetch("https://tmi-backend.onrender.com/save-profile", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          name: localProfile.name,
-          registration_type: localProfile.registrationType,
-          state: localProfile.state,
-          city: localProfile.city,
-          year_established: parseInt(localProfile.yearEstablished),
-          foreign_funds: localProfile.foreignFunds || false,
-          confidentiality_accepted: true
-        }),
-      });
+      const data = await createSubmission(payload);
 
-      if (!response.ok) {
-        throw new Error(`Failed to save profile: ${response.status}`);
+      console.log("[PROFILE API SUCCESS]", data);
+
+      if (!data?.id) {
+        throw new Error("Backend did not return a submission ID.");
       }
 
-      const data = await response.json();
-
       localStorage.setItem("orgId", data.id);
+      console.log("[PROFILE ORG ID SAVED]", data.id);
+
+      setOrgProfile(localProfile);
+      setConfidentialityAccepted(true);
+      navigate("/assessment/legal");
     } catch (error) {
-      console.error("Error saving profile:", error);
+      console.error("[PROFILE SUBMIT ERROR]", error);
     }
   };
 
@@ -97,8 +121,10 @@ const Profile = () => {
   const errorMessages: Record<string, string> = {
     name: "Organisation name is required.",
     registrationType: "Please select a registration type.",
+    primaryRole: "Please select your organisation's primary role.",
     state: "Please select your state or UT.",
     yearEstablished: "Please enter a valid 4-digit year.",
+    email: "Please enter a valid email address.",
     confidentiality: "Please tick the confidentiality box to continue.",
   };
 
@@ -171,12 +197,34 @@ const Profile = () => {
               {errors.registrationType && <p className="text-xs text-[#B91C1C] mt-1">{errorMessages.registrationType}</p>}
             </div>
 
+            {/* Primary Role */}
+            <div className={shakeField === "primaryRole" ? "animate-shake" : ""}>
+              <label className="block text-sm font-medium text-[#111827] mb-1.5">
+                Which best describes your organisation's primary role?
+              </label>
+              <select
+                value={localProfile.primaryRole || ""}
+                onChange={(e) => update("primaryRole", e.target.value)}
+                className={`w-full rounded-xl border bg-white px-3 py-2.5 text-sm outline-none ${fieldClass("primaryRole")}`}
+              >
+                <option value="">Select primary role...</option>
+                <option value="implementation_delivery">Implementation / Delivery</option>
+                <option value="research_advocacy">Research & Advocacy</option>
+                <option value="intermediary_capacity_builder">Intermediary / Capacity Builder</option>
+                <option value="donor_grantmaker">Donor / Grantmaker</option>
+              </select>
+              {errors.primaryRole && <p className="text-xs text-[#B91C1C] mt-1">{errorMessages.primaryRole}</p>}
+            </div>
+
             {/* State */}
             <div className={shakeField === "state" ? "animate-shake" : ""}>
               <label className="block text-sm font-medium text-[#111827] mb-1.5">State / Union Territory</label>
               <select
                 value={localProfile.state}
-                onChange={(e) => update("state", e.target.value)}
+                onChange={(e) => {
+                    update("state", e.target.value);
+                    update("city", "");
+                }}
                 className={`w-full rounded-xl border bg-white px-3 py-2.5 text-sm outline-none ${fieldClass("state")}`}
               >
                 <option value="">Select state...</option>
@@ -187,19 +235,22 @@ const Profile = () => {
               {errors.state && <p className="text-xs text-[#B91C1C] mt-1">{errorMessages.state}</p>}
             </div>
 
-            {/* City - Headquartered In with validation (alphabets + spaces only) */}
+            {/* City - Headquartered In (dynamic district dropdown based on selected State) */}
             <div>
               <label className="block text-sm font-medium text-[#111827] mb-1.5">Headquartered In</label>
-              <Input
+              <select
                 value={localProfile.city}
-                onChange={(e) => {
-                  let value = e.target.value.replace(/[^a-zA-Z\s]/g, "");
-                  value = value.replace(/\s+/g, " "); // collapse multiple spaces
-                  update("city", value);
-                }}
-                placeholder=""
-                className="border-[#E5E7EB] focus:border-[#0B3D4A] focus:ring-[#0B3D4A]"
-              />
+                onChange={(e) => update("city", e.target.value)}
+                disabled={!localProfile.state}
+                className="w-full rounded-xl border bg-white px-3 py-2.5 text-sm outline-none border-[#E5E7EB] focus:border-[#0B3D4A] focus:ring-[#0B3D4A]"
+              >
+                <option value="">
+                    Select District...
+                </option>
+                {(STATE_DISTRICTS[localProfile.state] || []).map((d) => (
+                  <option key={d} value={d}>{d}</option>
+                ))}
+              </select>
             </div>
 
             {/* Year */}
@@ -215,6 +266,31 @@ const Profile = () => {
                 className={fieldClass("yearEstablished")}
               />
               {errors.yearEstablished && <p className="text-xs text-[#B91C1C] mt-1">{errorMessages.yearEstablished}</p>}
+            </div>
+
+            {/* Email ID */}
+            <div className={shakeField === "email" ? "animate-shake" : ""}>
+              <label className="block text-sm font-medium text-[#111827] mb-1.5">Email ID</label>
+              <Input
+                type="email"
+                value={localProfile.email || ""}
+                onChange={(e) => update("email", e.target.value)}
+                placeholder="example@organisation.org"
+                className={fieldClass("email")}
+              />
+              {errors.email && <p className="text-xs text-[#B91C1C] mt-1">{errorMessages.email}</p>}
+            </div>
+
+            {/* Contact Details - optional, simple number, not mandatory */}
+            <div>
+              <label className="block text-sm font-medium text-[#111827] mb-1.5">Contact Details</label>
+              <Input
+                type="tel"
+                value={localProfile.contactDetails || ""}
+                onChange={(e) => update("contactDetails", e.target.value)}
+                placeholder="e.g. 9876543210 (optional)"
+                className="border-[#E5E7EB] focus:border-[#0B3D4A] focus:ring-[#0B3D4A]"
+              />
             </div>
 
             {/* Foreign Funds */}

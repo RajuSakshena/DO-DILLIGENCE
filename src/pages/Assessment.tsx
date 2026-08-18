@@ -13,7 +13,8 @@ const Assessment = () => {
   const { sectionId } = useParams<{ sectionId: string }>();
   const navigate = useNavigate();
   const { answers, setAnswer, setCurrentSectionIndex,
-    isSectionComplete, isSectionUnlocked, markSectionComplete, getFilteredParams } = useAssessment();
+    isSectionComplete, isSectionUnlocked, markSectionComplete, getFilteredParams,
+    saveProgress } = useAssessment();
 
   const sectionIndex = SECTION_ORDER.indexOf(sectionId || "legal");
   const filteredParams = getFilteredParams();
@@ -23,6 +24,7 @@ const Assessment = () => {
   const [showSaveDraft, setShowSaveDraft] = useState(false);
   const [sectionJustCompleted, setSectionJustCompleted] = useState(false);
   const [unansweredPulse, setUnansweredPulse] = useState(false);
+  const [isSavingDraft, setIsSavingDraft] = useState(false);
 
   useEffect(() => {
     if (sectionIndex >= 0) setCurrentSectionIndex(sectionIndex);
@@ -30,30 +32,6 @@ const Assessment = () => {
     setSectionJustCompleted(false);
     setUnansweredPulse(false);
   }, [sectionId, sectionIndex, setCurrentSectionIndex]);
-
-  // Resume from a previously saved draft, once, on initial load
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem("dodiligence-assessment-draft");
-      if (!saved) return;
-      const draft = JSON.parse(saved);
-      if (draft?.answers) {
-        Object.entries(draft.answers as Record<string, "yes" | "no">).forEach(
-          ([docId, status]) => {
-            if (status != null && answers[docId] == null) {
-              setAnswer(docId, status);
-            }
-          }
-        );
-      }
-      if (draft?.sectionId && draft.sectionId !== sectionId) {
-        navigate(`/assessment/${draft.sectionId}`);
-      }
-    } catch {
-      // ignore malformed/unavailable draft data
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   const applicableDocs = useMemo(() => {
     if (!param) return [];
@@ -103,18 +81,23 @@ const Assessment = () => {
     }
   };
 
-  const DRAFT_STORAGE_KEY = "dodiligence-assessment-draft";
-
-  const handleSaveDraft = () => {
+  const handleSaveDraft = async () => {
+    if (isSavingDraft) return;
+    setIsSavingDraft(true);
     try {
-      localStorage.setItem(
-        DRAFT_STORAGE_KEY,
-        JSON.stringify({ sectionId, answers })
-      );
-    } catch {
-      // ignore storage errors (e.g. private browsing)
+      const result = await saveProgress();
+      if (!result.success) {
+        if (result.reason === "missing-org") {
+          toast.error("Please complete your organisation profile before saving your progress.");
+        } else {
+          toast.error("We couldn't save your progress right now. Please try again.");
+        }
+        return;
+      }
+      setShowSaveDraft(true);
+    } finally {
+      setIsSavingDraft(false);
     }
-    setShowSaveDraft(true);
   };
 
   return (
@@ -187,9 +170,10 @@ const Assessment = () => {
         <div className="mt-4">
           <button
             onClick={handleSaveDraft}
-            className="text-[13px] text-[#6B7280] font-body hover:underline transition-colors"
+            disabled={isSavingDraft}
+            className="text-[13px] text-[#6B7280] font-body hover:underline transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
           >
-            Save as draft
+            {isSavingDraft ? "Saving..." : "Save as draft"}
           </button>
         </div>
 

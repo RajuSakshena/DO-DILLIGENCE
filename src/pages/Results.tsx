@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { CheckCircle, XCircle, Compass, ShieldCheck, ShieldAlert, TrendingUp, TriangleAlert } from "lucide-react";
 import { useAssessment } from "@/store/assessment-context";
 import { getParameterIcon } from "@/lib/assessment-data";
-import { getPriorityActions } from "@/lib/scoring";
+import { getPriorityActions, type ScoringResult } from "@/lib/scoring";
+import { updateSubmission, type UpdateSubmissionPayload } from "@/lib/api";
 import { motion, AnimatePresence } from "framer-motion";
 
 const priorityColors: Record<string, { border: string; bg: string; text: string }> = {
@@ -17,10 +18,10 @@ const swotConfig = {
   strengths: {
     title: "Strengths",
     Icon: ShieldCheck,
-    bg: "#DFF3F2",
-    itemBg: "#CDEEEC",
-    border: "#14B8A6",
-    iconColor: "#15803D",
+    bg: "#E8F7D7",
+    itemBg: "#D9F1C0",
+    border: "#22C55E",
+    iconColor: "#22C55E",
   },
   weaknesses: {
     title: "Weaknesses",
@@ -33,10 +34,10 @@ const swotConfig = {
   opportunities: {
     title: "Opportunities",
     Icon: TrendingUp,
-    bg: "#E8F7D7",
-    itemBg: "#D9F1C0",
-    border: "#22C55E",
-    iconColor: "#22C55E",
+    bg: "#DFF3F2",
+    itemBg: "#CDEEEC",
+    border: "#14B8A6",
+    iconColor: "#15803D",
   },
   threats: {
     title: "Threats",
@@ -48,13 +49,91 @@ const swotConfig = {
   },
 } as const;
 
+// Defined at module scope (outside Results) so it keeps a stable component identity
+// across re-renders instead of being redefined - and therefore remounted - every render.
+const DonutChart = ({ percent, color }: { percent: number; color: string }) => {
+  const radius = 26;
+  const stroke = 6;
+  const normalizedRadius = radius - stroke / 2;
+  const circumference = normalizedRadius * 2 * Math.PI;
+  const strokeDashoffset = circumference - (percent / 100) * circumference;
+
+  return (
+    <div className="relative w-[64px] h-[64px]">
+      <svg height="64" width="64" role="img" aria-label={`Progress ${Math.round(percent)}%`}>
+        <circle
+          stroke="#E5E7EB"
+          fill="transparent"
+          strokeWidth={stroke}
+          r={normalizedRadius}
+          cx="32"
+          cy="32"
+        />
+        <circle
+          stroke={color}
+          fill="transparent"
+          strokeWidth={stroke}
+          strokeDasharray={circumference + " " + circumference}
+          style={{ strokeDashoffset, transition: "stroke-dashoffset 0.6s ease" }}
+          strokeLinecap="round"
+          r={normalizedRadius}
+          cx="32"
+          cy="32"
+        />
+      </svg>
+
+      <div className="absolute inset-0 flex items-center justify-center text-xs font-semibold">
+        {Math.round(percent)}%
+      </div>
+    </div>
+  );
+};
+
 const Results = () => {
   const navigate = useNavigate();
-  const { answers, orgProfile, getFilteredParams } = useAssessment();
+  const { answers, orgProfile, getFilteredParams, scoring } = useAssessment();
   const [openSection, setOpenSection] = useState<string | null>(null);
+  const sectionRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const filteredParams = getFilteredParams();
 
   const hasAnswers = Object.values(answers).some((answer) => answer !== null);
+
+  // Persists the final computed scoring result (already used to render this
+  // page, via the shared `scoring` value from AssessmentProvider) to the
+  // existing Neon submission row. Guarded by a ref so ordinary re-renders
+  // (e.g. toggling an accordion) never trigger a duplicate PATCH — only a
+  // genuine change to the scoring result (or the first render once answers
+  // exist) does.
+  const hasSavedResultRef = useRef<ScoringResult | null>(null);
+
+  useEffect(() => {
+    if (!hasAnswers) return;
+    if (hasSavedResultRef.current === scoring) return;
+    hasSavedResultRef.current = scoring;
+
+    const orgId = localStorage.getItem("orgId");
+    if (!orgId) {
+      console.error("Missing orgId in localStorage — cannot persist assessment results.");
+      return;
+    }
+
+    (async () => {
+      try {
+        await updateSubmission(orgId, {
+          overall_score: scoring.overallScore,
+          tier: scoring.tier,
+          parameter_scores: scoring.parameterScores as unknown as UpdateSubmissionPayload["parameter_scores"],
+          red_flags: scoring.redFlags as unknown as UpdateSubmissionPayload["red_flags"],
+          csr_ineligible: scoring.csrIneligible,
+        });
+      } catch (err) {
+        // Don't crash the Results page — the score is already computed and
+        // displayed from local state regardless of persistence success.
+        console.error("Failed to persist assessment results to Neon:", err);
+      }
+    })();
+  }, [hasAnswers, scoring]);
+
   if (!hasAnswers) {
     return (
       <div className="pt-24 pb-16 px-6 min-h-screen flex items-center justify-center" style={{ backgroundColor: "#F8F6F1" }}>
@@ -75,6 +154,22 @@ const Results = () => {
 
   const toggleSection = (id: string) => {
     setOpenSection(openSection === id ? null : id);
+  };
+
+  // Opens the Health Area accordion for the clicked SWOT chip (or keeps it open if
+  // already open) and smoothly scrolls it into view.
+  // We wait for the accordion open/close animation (200ms, see AnimatePresence transition
+  // below) to finish before scrolling - if we scroll immediately, the clicked section (and
+  // any previously-open section that's collapsing) is still animating its height, so the
+  // scroll target position keeps shifting and the browser lands in the wrong spot.
+  const handleSwotItemClick = (id: string) => {
+    setOpenSection(id);
+    setTimeout(() => {
+      sectionRefs.current[id]?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    }, 250);
   };
 
   // Colour logic:
@@ -180,46 +275,10 @@ const Results = () => {
 
   const swotCategories = getSWOTCategories();
 
-  const DonutChart = ({ percent, color }: { percent: number; color: string }) => {
-    const radius = 26;
-    const stroke = 6;
-    const normalizedRadius = radius - stroke / 2;
-    const circumference = normalizedRadius * 2 * Math.PI;
-    const strokeDashoffset = circumference - (percent / 100) * circumference;
-
-    return (
-      <div className="relative w-[64px] h-[64px]">
-        <svg height="64" width="64" role="img" aria-label={`Progress ${Math.round(percent)}%`}>
-          <circle
-            stroke="#E5E7EB"
-            fill="transparent"
-            strokeWidth={stroke}
-            r={normalizedRadius}
-            cx="32"
-            cy="32"
-          />
-          <circle
-            stroke={color}
-            fill="transparent"
-            strokeWidth={stroke}
-            strokeDasharray={circumference + " " + circumference}
-            style={{ strokeDashoffset, transition: "stroke-dashoffset 0.6s ease" }}
-            strokeLinecap="round"
-            r={normalizedRadius}
-            cx="32"
-            cy="32"
-          />
-        </svg>
-
-        <div className="absolute inset-0 flex items-center justify-center text-xs font-semibold">
-          {Math.round(percent)}%
-        </div>
-      </div>
-    );
-  };
-
-  // Reusable accordion with simplified UI
-  const HealthAccordion = ({ param }: { param: any }) => {
+  // NOTE: DonutChart and HealthAccordion now live outside this component (see below Results)
+  // so they keep a stable identity across re-renders and don't get remounted every time
+  // openSection changes.
+  const renderHealthAccordion = (param: any) => {
     const Icon = getParameterIcon(param.iconName);
     const isOpen = openSection === param.id;
     const status = getSectionStatus(param.id);
@@ -238,6 +297,8 @@ const Results = () => {
 
     return (
       <div
+        key={param.id}
+        ref={(el) => { sectionRefs.current[param.id] = el; }}
         className={`rounded-xl overflow-hidden border border-[#E5E7EB] border-l-4 shadow-sm transition-all duration-200 hover:shadow-md hover:scale-[1.01] ${status.bgTint}`}
         style={{ borderLeftColor: status.color }}
       >
@@ -378,14 +439,15 @@ const Results = () => {
                   {items.length > 0 ? (
                     <div className="flex flex-wrap gap-2">
                       {items.map(({ param }: any) => (
-                        <span
+                        <button
                           key={param.id}
-                          className="inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-sm font-medium text-[#111827] font-body transition-all hover:scale-105 hover:shadow-sm cursor-default"
+                          type="button"
+                          onClick={() => handleSwotItemClick(param.id)}
+                          className="inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-sm font-medium text-[#111827] font-body transition-all duration-200 hover:scale-105 hover:shadow-md cursor-pointer"
                           style={{ backgroundColor: itemBg }}
                         >
-                          <span style={{ color: border }}>✔</span>
                           {param.name}
-                        </span>
+                        </button>
                       ))}
                     </div>
                   ) : (
@@ -402,41 +464,39 @@ const Results = () => {
 
           {/* All sections with simplified accordion */}
           <div className="space-y-4 mb-10">
-            {filteredParams.map((param) => (
-              <HealthAccordion key={param.id} param={param} />
-            ))}
+            {filteredParams.map((param) => renderHealthAccordion(param))}
           </div>
 
-          <div className="flex flex-col sm:flex-row gap-3 mb-4 no-print">
+          <div className="flex flex-col gap-3 mb-4 no-print">
             <Link
               to="/share"
-              className="flex-1 py-3 rounded-xl bg-[#C4872A] text-white font-display font-semibold text-sm text-center hover:bg-[#A8711F] transition-all"
+              className="w-full py-3 rounded-xl bg-[#C4872A] text-white font-display font-semibold text-sm text-center hover:bg-[#A8711F] transition-all"
             >
               Share & Export
             </Link>
-            <a
-              href="https://themetropolitaninstitute.com/"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex-1 py-3 rounded-xl border-2 border-[#0B3D4A] text-[#0B3D4A] font-display font-semibold text-sm text-center hover:bg-[#E4F2F6] transition-all"
-            >
-              Connect with Experts
-            </a>
-          </div>
-
-          {/* CTA section with both links */}
-          <div className="mb-4 no-print flex flex-col">
-            {hasMandatoryNo && (
+            <div className="flex flex-col sm:flex-row gap-3">
+              <a
+                href="https://calendar.app.google/2tbpGtcbyGEnP5EL6"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="sm:w-1/2 py-3 rounded-xl border-2 border-[#0B3D4A] text-[#0B3D4A] font-display font-semibold text-sm text-center hover:bg-[#E4F2F6] transition-all"
+              >
+                Connect with Us
+              </a>
               <Link
                 to="/gift"
-                className="inline-flex items-center gap-1 text-sm text-[#C4872A] hover:underline font-medium transition-colors"
+                className="sm:w-1/2 py-3 rounded-xl border-2 border-[#0B3D4A] text-[#0B3D4A] font-display font-semibold text-sm text-center hover:bg-[#E4F2F6] transition-all"
               >
-                Claim checklists to strengthen your gaps. <span>→</span>
+                Claim Checklist
               </Link>
-            )}
+            </div>
+          </div>
+
+          {/* CTA section with remaining link */}
+          <div className="mb-4 no-print flex flex-col">
             <button
               onClick={() => navigate("/")}
-              className={`inline-flex items-center gap-1 text-sm text-[#C4872A] hover:underline font-medium transition-colors ${hasMandatoryNo ? "mt-2" : ""}`}
+              className="inline-flex items-center gap-1 text-sm text-[#C4872A] hover:underline font-medium transition-colors"
             >
               Start assessment for a new organisation <span>→</span>
             </button>

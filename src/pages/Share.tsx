@@ -3,10 +3,12 @@ import { Link } from "react-router-dom";
 import { Mail, Link2, FileDown, Info } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
+import { updateSubmission } from "@/lib/api";
 
 const Share = () => {
   const [email, setEmail] = useState("");
   const [emailError, setEmailError] = useState("");
+  const [isSending, setIsSending] = useState(false);
   const shareUrl = window.location.origin + "/results";
 
   const validateEmail = (e: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
@@ -16,15 +18,36 @@ const Share = () => {
     toast.success("Link copied to clipboard!");
   };
 
-  const handleSendEmail = () => {
+  const handleSendEmail = async () => {
     if (!email) return;
     if (!validateEmail(email)) {
       setEmailError("Please enter a valid email address.");
       return;
     }
     setEmailError("");
-    toast.success(`Report sent to ${email}`, { duration: 2500 });
-    setEmail("");
+
+    const orgId = localStorage.getItem("orgId");
+    if (!orgId) {
+      setEmailError("We couldn't find your assessment. Please restart from the beginning.");
+      return;
+    }
+
+    setIsSending(true);
+    try {
+      await updateSubmission(orgId, {
+        shared_with_email: email,
+      });
+      toast.success(`Report sent to ${email}`, { duration: 2500 });
+      setEmail("");
+    } catch (err) {
+      const message =
+        err instanceof Error
+          ? err.message
+          : "Something went wrong while sharing the report. Please try again.";
+      setEmailError(message);
+    } finally {
+      setIsSending(false);
+    }
   };
 
   const handleDownload = () => window.print();
@@ -54,10 +77,10 @@ const Share = () => {
               </div>
               <button
                 onClick={handleSendEmail}
-                disabled={!email}
+                disabled={!email || isSending}
                 className="shrink-0 px-4 py-2 rounded-xl bg-[#0B3D4A] text-white text-sm font-medium hover:bg-[#1A6478] transition-all disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                Send Report
+                {isSending ? "Sending..." : "Send Report"}
               </button>
             </div>
           </div>
