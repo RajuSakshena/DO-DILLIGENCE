@@ -17,6 +17,35 @@
 const API_BASE_URL = "https://dodilligence-backend.onrender.com";
 
 // -----------------------------------------------------------------------
+// Cold-start / retry configuration
+// -----------------------------------------------------------------------
+// Render's free tier spins the backend down after inactivity, so the
+// first request after a while can take a long time to come back while
+// the instance wakes up. These constants tune how patient we are, and
+// are only used by the health-check + submission-retry logic below.
+
+/** Timeout for a single health-check GET (the backend should answer
+ *  quickly once it's actually awake). */
+const HEALTH_CHECK_TIMEOUT_MS = 10_000;
+/** Total time we're willing to spend waiting for the backend to wake up
+ *  before giving up on the whole submission attempt. */
+const HEALTH_CHECK_MAX_WAIT_MS = 90_000;
+/** Delay between health-check attempts while waiting for a cold start. */
+const HEALTH_CHECK_RETRY_DELAY_MS = 3_000;
+
+/** Timeout for a single submission POST, generous enough to survive a
+ *  cold start if the health check above raced past it. */
+const SUBMIT_TIMEOUT_MS = 90_000;
+/** Max number of POST attempts (the first attempt + retries). */
+const SUBMIT_MAX_ATTEMPTS = 4;
+/** Base delay for exponential backoff between submission retries. */
+const SUBMIT_BASE_DELAY_MS = 2_000;
+
+/** Timeout applied to plain GET/PATCH requests (getSubmission /
+ *  updateSubmission), so a hung request doesn't stall forever. */
+const DEFAULT_REQUEST_TIMEOUT_MS = 90_000;
+
+// -----------------------------------------------------------------------
 // Domain types
 // -----------------------------------------------------------------------
 
@@ -101,6 +130,16 @@ export interface Submission {
 export interface CreateSubmissionResponse {
   id: string;
 }
+
+/**
+ * Internal wire shape for POST /api/submissions: the caller-facing
+ * `CreateSubmissionPayload` plus the client-generated idempotency id.
+ * Not exported — callers of `createSubmission` never need to think
+ * about the id, it's generated and attached internally so the same id
+ * can be reused across cold-start retries without creating duplicate
+ * rows.
+ */
+type CreateSubmissionRequestBody = CreateSubmissionPayload & { id: string };
 
 /**
  * Payload for creating a new submission. Used by Profile.tsx when the
@@ -220,6 +259,210 @@ function extractErrorMessage(body: unknown, fallback: string): string {
 }
 
 /**
+ * Thrown for failures that should NOT be retried (e.g. 4xx validation
+ * errors). Distinguishes "the server told us the request was bad" from
+ * "we couldn't reach the server / it errored transiently", so retry
+ * loops know when to stop early instead of hammering a request that
+ * will never succeed.
+ */
+class NonRetryableApiError extends Error {}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * fetch() with an AbortController-based timeout. Render cold starts can
+ * take a while to respond, so callers pass a generous timeout — this
+ * just guarantees we never hang forever on a dropped connection.
+ */
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Generates a UUID to use as the submission's idempotency key. Prefers
+ * `crypto.randomUUID()`, falling back to a manual UUIDv4 for older
+ * browsers that don't support it.
+ */
+function generateClientSubmissionId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === "x" ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
+/**
+ * Polls GET /api/health until the backend responds successfully, or
+ * gives up after `HEALTH_CHECK_MAX_WAIT_MS`. This is what absorbs a
+ * Render free-tier cold start: the first ping(s) may fail or time out
+ * while the instance spins up, and we just keep trying on a fixed
+ * interval within a bounded total budget.
+ */
+async function waitForBackendReady(): Promise<void> {
+  const startedAt = Date.now();
+  let attempt = 0;
+
+  while (true) {
+    attempt += 1;
+    console.log("[API HEALTH CHECK]", {
+      url: `${API_BASE_URL}/api/health`,
+      attempt,
+      elapsedMs: Date.now() - startedAt,
+    });
+
+    try {
+      const response = await fetchWithTimeout(
+        `${API_BASE_URL}/api/health`,
+        { method: "GET" },
+        HEALTH_CHECK_TIMEOUT_MS
+      );
+      if (response.ok) {
+        console.log("[API HEALTH CHECK] backend is awake", { attempt });
+        return;
+      }
+      console.warn("[API HEALTH CHECK] non-OK status, will retry", {
+        attempt,
+        status: response.status,
+      });
+    } catch (err) {
+      console.warn("[API HEALTH CHECK] request failed, will retry", {
+        attempt,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    if (Date.now() - startedAt >= HEALTH_CHECK_MAX_WAIT_MS) {
+      throw new Error(
+        "The server is taking too long to wake up. Please try again in a moment."
+      );
+    }
+
+    console.log("[API RETRY]", {
+      context: "health-check",
+      nextAttempt: attempt + 1,
+      delayMs: HEALTH_CHECK_RETRY_DELAY_MS,
+    });
+    await sleep(HEALTH_CHECK_RETRY_DELAY_MS);
+  }
+}
+
+/**
+ * Submits a new submission with a fixed, caller-provided idempotency id,
+ * retrying transient failures (network errors, timeouts, 5xx) with
+ * exponential backoff while reusing the SAME id on every attempt. If the
+ * first attempt actually succeeded server-side but the response was
+ * lost, the retry's identical id lets the backend recognize it (via
+ * `ON CONFLICT (id)`) and return the existing row instead of creating a
+ * duplicate.
+ *
+ * 4xx responses are treated as non-retryable: they mean the request
+ * itself is invalid, so retrying it would never help.
+ */
+async function submitSubmissionWithRetry(
+  body: CreateSubmissionRequestBody
+): Promise<CreateSubmissionResponse> {
+  let attempt = 0;
+  let delay = SUBMIT_BASE_DELAY_MS;
+
+  while (true) {
+    attempt += 1;
+    console.log("[API REQUEST]", {
+      url: `${API_BASE_URL}/api/submissions`,
+      method: "POST",
+      attempt,
+      payload: body,
+      timestamp: new Date().toISOString(),
+    });
+
+    try {
+      const response = await fetchWithTimeout(
+        `${API_BASE_URL}/api/submissions`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        },
+        SUBMIT_TIMEOUT_MS
+      );
+
+      console.log("[API RESPONSE]", {
+        status: response.status,
+        ok: response.ok,
+        attempt,
+      });
+
+      const parsedBody = await safeParseJson(response);
+
+      if (response.ok) {
+        if (parsedBody === null) {
+          throw new Error("The server returned an empty or invalid response.");
+        }
+        return parsedBody as CreateSubmissionResponse;
+      }
+
+      if (response.status >= 400 && response.status < 500) {
+        const message = extractErrorMessage(
+          parsedBody,
+          `Request failed with status ${response.status}.`
+        );
+        console.error("[API ERROR]", {
+          attempt,
+          status: response.status,
+          message,
+          retryable: false,
+        });
+        throw new NonRetryableApiError(message);
+      }
+
+      // 5xx: fall through to the retry logic below.
+      console.warn("[API ERROR]", {
+        attempt,
+        status: response.status,
+        retryable: true,
+      });
+    } catch (err) {
+      if (err instanceof NonRetryableApiError) {
+        throw err;
+      }
+      console.warn("[API ERROR]", {
+        attempt,
+        error: err instanceof Error ? err.message : String(err),
+        retryable: true,
+      });
+    }
+
+    if (attempt >= SUBMIT_MAX_ATTEMPTS) {
+      throw new Error(
+        "We couldn't confirm your submission was saved after several attempts. Please check your connection and try again — the details you entered have been kept."
+      );
+    }
+
+    console.log("[API RETRY]", {
+      context: "submit-submission",
+      nextAttempt: attempt + 1,
+      delayMs: delay,
+    });
+    await sleep(delay);
+    delay *= 2;
+  }
+}
+
+/**
  * Performs a fetch against the backend, handling network failures and
  * non-OK responses consistently. Throws an `Error` with a safe, useful
  * message in all failure cases.
@@ -243,19 +486,23 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
 
   try {
-    response = await fetch(url, {
-      headers: {
-        "Content-Type": "application/json",
-        ...(init?.headers || {}),
+    response = await fetchWithTimeout(
+      url,
+      {
+        headers: {
+          "Content-Type": "application/json",
+          ...(init?.headers || {}),
+        },
+        ...init,
       },
-      ...init,
-    });
+      DEFAULT_REQUEST_TIMEOUT_MS
+    );
   } catch (err) {
-    // Network error, CORS failure, backend unreachable, etc.
-    console.error("[API NETWORK ERROR]", {
+    // Network error, timeout/abort, CORS failure, backend unreachable, etc.
+    console.error("[API ERROR]", {
       url,
       method,
-      error: err,
+      error: err instanceof Error ? err.message : String(err),
     });
     throw new Error(
       `Unable to reach the server. Please check your connection and try again.`
@@ -340,12 +587,22 @@ function headersToLoggableObject(headers: Headers): Record<string, string> {
 export async function createSubmission(
   payload: CreateSubmissionPayload
 ): Promise<CreateSubmissionResponse> {
-  console.log("[createSubmission] called with payload:", payload);
+  // One idempotency id per logical submission attempt, reused across
+  // every health-check/retry cycle below. If a POST actually reaches
+  // the DB but the response is lost, retrying with this same id lets
+  // the backend recognize it and hand back the existing row instead of
+  // inserting a duplicate.
+  const clientId = generateClientSubmissionId();
 
-  const result = await apiFetch<CreateSubmissionResponse>("/api/submissions", {
-    method: "POST",
-    body: JSON.stringify(payload),
+  console.log("[createSubmission] called with payload:", payload, {
+    clientId,
   });
+
+  // Give the backend a chance to wake up (Render free-tier cold start)
+  // before we attempt the actual write.
+  await waitForBackendReady();
+
+  const result = await submitSubmissionWithRetry({ ...payload, id: clientId });
 
   console.log("[createSubmission] resolved with:", result);
 
