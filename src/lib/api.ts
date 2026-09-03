@@ -5,8 +5,8 @@
  * All calls to the backend for creating, reading, and updating a
  * `assessment_submissions` row must go through the functions exported here.
  *
- * Do NOT call https://tmi-backend.onrender.com or any other backend
- * directly from a component — add a function here instead.
+ * Do NOT call the backend directly from a component — add a function
+ * here instead.
  */
 
 // -----------------------------------------------------------------------
@@ -14,27 +14,29 @@
 // -----------------------------------------------------------------------
 
 // TODO: swap for the production URL when deploying.
-const API_BASE_URL = "https://dodilligence-backend.onrender.com";
+const API_BASE_URL = "https://dodilligencebackend-80z1sdow.b4a.run";
 
 // -----------------------------------------------------------------------
-// Cold-start / retry configuration
+// Backend availability / retry configuration
 // -----------------------------------------------------------------------
-// Render's free tier spins the backend down after inactivity, so the
-// first request after a while can take a long time to come back while
-// the instance wakes up. These constants tune how patient we are, and
-// are only used by the health-check + submission-retry logic below.
+// These constants tune how patient we are with the backend before
+// treating a request as failed, providing retry protection for
+// transient network/backend availability issues. They are only used by
+// the health-check + submission-retry logic below.
 
 /** Timeout for a single health-check GET (the backend should answer
- *  quickly once it's actually awake). */
+ *  quickly once it's available). */
 const HEALTH_CHECK_TIMEOUT_MS = 10_000;
-/** Total time we're willing to spend waiting for the backend to wake up
- *  before giving up on the whole submission attempt. */
+/** Total time we're willing to spend waiting for the backend to become
+ *  available before giving up on the whole submission attempt. */
 const HEALTH_CHECK_MAX_WAIT_MS = 90_000;
-/** Delay between health-check attempts while waiting for a cold start. */
+/** Delay between health-check attempts while waiting for the backend to
+ *  become available. */
 const HEALTH_CHECK_RETRY_DELAY_MS = 3_000;
 
 /** Timeout for a single submission POST, generous enough to survive a
- *  cold start if the health check above raced past it. */
+ *  brief backend availability hiccup if the health check above raced
+ *  past it. */
 const SUBMIT_TIMEOUT_MS = 90_000;
 /** Max number of POST attempts (the first attempt + retries). */
 const SUBMIT_MAX_ATTEMPTS = 4;
@@ -136,8 +138,7 @@ export interface CreateSubmissionResponse {
  * `CreateSubmissionPayload` plus the client-generated idempotency id.
  * Not exported — callers of `createSubmission` never need to think
  * about the id, it's generated and attached internally so the same id
- * can be reused across cold-start retries without creating duplicate
- * rows.
+ * can be reused across retries without creating duplicate rows.
  */
 type CreateSubmissionRequestBody = CreateSubmissionPayload & { id: string };
 
@@ -272,8 +273,8 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * fetch() with an AbortController-based timeout. Render cold starts can
- * take a while to respond, so callers pass a generous timeout — this
+ * fetch() with an AbortController-based timeout. Backend responses can
+ * occasionally take a while, so callers pass a generous timeout — this
  * just guarantees we never hang forever on a dropped connection.
  */
 async function fetchWithTimeout(
@@ -308,10 +309,10 @@ function generateClientSubmissionId(): string {
 
 /**
  * Polls GET /api/health until the backend responds successfully, or
- * gives up after `HEALTH_CHECK_MAX_WAIT_MS`. This is what absorbs a
- * Render free-tier cold start: the first ping(s) may fail or time out
- * while the instance spins up, and we just keep trying on a fixed
- * interval within a bounded total budget.
+ * gives up after `HEALTH_CHECK_MAX_WAIT_MS`. Checks backend health
+ * before creating a submission: the first ping(s) may fail or time out
+ * if the backend is briefly unavailable, and we just keep trying on a
+ * fixed interval within a bounded total budget.
  */
 async function waitForBackendReady(): Promise<void> {
   const startedAt = Date.now();
@@ -332,7 +333,7 @@ async function waitForBackendReady(): Promise<void> {
         HEALTH_CHECK_TIMEOUT_MS
       );
       if (response.ok) {
-        console.log("[API HEALTH CHECK] backend is awake", { attempt });
+        console.log("[API HEALTH CHECK] backend is available", { attempt });
         return;
       }
       console.warn("[API HEALTH CHECK] non-OK status, will retry", {
@@ -348,7 +349,7 @@ async function waitForBackendReady(): Promise<void> {
 
     if (Date.now() - startedAt >= HEALTH_CHECK_MAX_WAIT_MS) {
       throw new Error(
-        "The server is taking too long to wake up. Please try again in a moment."
+        "The server is taking too long to respond. Please try again in a moment."
       );
     }
 
@@ -598,8 +599,8 @@ export async function createSubmission(
     clientId,
   });
 
-  // Give the backend a chance to wake up (Render free-tier cold start)
-  // before we attempt the actual write.
+  // Checks backend health before creating a submission, providing
+  // retry protection for transient network/backend availability issues.
   await waitForBackendReady();
 
   const result = await submitSubmissionWithRetry({ ...payload, id: clientId });
