@@ -91,7 +91,7 @@ const Overview = () => {
 
           <div className="flex items-center gap-2">
             <Clock size={14} className="text-[#0B3D4A]" />
-            <span>10 minutes for most organisations</span>
+            <span>5 minutes for most organisations</span>
           </div>
         </div>
 
