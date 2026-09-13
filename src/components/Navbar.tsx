@@ -8,12 +8,18 @@ const Navbar = () => {
     >
       <div className="max-w-4xl mx-auto flex items-center justify-between px-6 h-16">
         <Link to="/" className="flex items-center gap-3">
+          {/* TMI Logo */}
+          <img
+            src="/WhiteIcon.png"
+            alt="The Metropolitan Institute"
+            className="w-9 h-9 md:w-10 md:h-10 object-contain"
+          />
+
+          {/* Do Dilligence Brand Name */}
           <div className="flex flex-col">
             <span className="font-display font-bold text-white text-[22px] leading-tight">
-              DODILIGENCE
+              Do Dilligence
             </span>
-
-          
           </div>
         </Link>
       </div>
