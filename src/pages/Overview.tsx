@@ -29,6 +29,7 @@ const Overview = () => {
         >
           Here's what we'll cover
         </motion.h1>
+
         <motion.p
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
@@ -46,6 +47,14 @@ const Overview = () => {
         >
           {PARAMETERS.map((param) => {
             const Icon = getParameterIcon(param.iconName);
+
+            const displayName =
+              param.name === "Operational"
+                ? "Operations"
+                : param.name === "Strategic"
+                  ? "Strategy"
+                  : param.name;
+
             return (
               <motion.div
                 key={param.id}
@@ -56,12 +65,19 @@ const Overview = () => {
                   <div className="w-10 h-10 rounded-xl bg-[#E4F2F6] flex items-center justify-center">
                     <Icon size={20} className="text-[#0B3D4A]" />
                   </div>
+
                   <span className="px-2.5 py-0.5 rounded-full bg-[#E4F2F6] text-[#0B3D4A] text-xs font-medium">
-                    {getCountableDocuments(param.documents).length} docs
+                    {getCountableDocuments(param.documents).length} documents
                   </span>
                 </div>
-                <h3 className="font-display font-semibold text-[#0B3D4A] text-sm mb-1">{param.name}</h3>
-                <p className="text-xs text-[#4B5563]">{descriptions[param.id]}</p>
+
+                <h3 className="font-display font-semibold text-[#0B3D4A] text-sm mb-1">
+                  {displayName}
+                </h3>
+
+                <p className="text-xs text-[#4B5563]">
+                  {descriptions[param.id]}
+                </p>
               </motion.div>
             );
           })}
@@ -72,6 +88,7 @@ const Overview = () => {
             <Lock size={14} className="text-[#0B3D4A]" />
             <span>No personal data is stored without your consent</span>
           </div>
+
           <div className="flex items-center gap-2">
             <Clock size={14} className="text-[#0B3D4A]" />
             <span>10 minutes for most organisations</span>
