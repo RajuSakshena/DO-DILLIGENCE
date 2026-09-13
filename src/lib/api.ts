@@ -14,7 +14,7 @@
 // -----------------------------------------------------------------------
 
 // TODO: swap for the production URL when deploying.
-const API_BASE_URL = "https://dodilligencebackend-80z1sdow.b4a.run";
+const API_BASE_URL = "https://dodilligence-backend.vercel.app";
 
 // -----------------------------------------------------------------------
 // Backend availability / retry configuration
