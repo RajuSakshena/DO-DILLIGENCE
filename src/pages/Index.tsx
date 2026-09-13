@@ -66,20 +66,20 @@ const Landing = () => {
           className="relative z-10 mb-8"
         >
           <img
-            src="/TMI.png"
+            src="/WhiteLogo.png"
             alt="The Metropolitan Institute"
-            className="w-24 md:w-28 h-auto object-contain"
+            className="w-32 md:w-36 h-auto object-contain"
           />
         </motion.div>
 
         <motion.h1
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.7, delay: 0.3 }}
-          className="relative z-10 font-display font-bold text-white text-3xl md:text-[56px] md:leading-[1.1] max-w-3xl mb-5"
-        >
-          Become CSR ready.
-        </motion.h1>
+  initial={{ opacity: 0, y: 20 }}
+  animate={{ opacity: 1, y: 0 }}
+  transition={{ duration: 0.7, delay: 0.3 }}
+  className="relative z-10 font-display font-bold text-white text-4xl md:text-[64px] md:leading-[1.1] max-w-3xl mb-5"
+>
+  Become CSR ready.
+</motion.h1>
 
         <motion.p
           initial={{ opacity: 0, y: 20 }}
@@ -193,7 +193,7 @@ const Landing = () => {
             {[
               { value: 6, suffix: "", label: "Health Areas" },
               { value: 27, suffix: "", label: "Documents" },
-              { value: 10, suffix: " min", label: "Average Time" },
+              { value: 5, suffix: " min", label: "Average Time" },
             ].map((stat) => (
               <motion.div key={stat.label} variants={fadeInUp} className="flex flex-col items-center">
                 <CountUp target={stat.value} suffix={stat.suffix} />
@@ -284,11 +284,7 @@ const Landing = () => {
               <ArrowRight size={20} />
             </Link>
           </motion.div>
-          <p className="text-[#9CA3AF] text-sm mt-6 text-center">
-            An Initiative by
-            <br />
-            The Metropolitan Institute
-          </p>
+          
         </div>
       </section>
 
@@ -297,7 +293,7 @@ const Landing = () => {
         <div className="max-w-4xl mx-auto px-6 flex items-center justify-between text-xs text-[#9CA3AF]">
           <div className="flex items-center gap-2">
             <img
-              src="/TMI.png"
+              src="/TransparentIcon.png"
               alt="The Metropolitan Institute"
               className="w-6 h-6 object-contain"
             />
